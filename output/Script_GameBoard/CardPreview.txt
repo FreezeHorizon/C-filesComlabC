@@ -1,0 +1,145 @@
+class_name CardPreview extends Node2D
+
+# --- Node References ---
+@onready var card_back_image: Sprite2D = $CardBackImage
+@onready var card_outline: Sprite2D = $CardOutline 
+@onready var card_image: Sprite2D = $CardImage 
+@onready var attack_label: RichTextLabel = $CardImage/Stats/AttackImage/Attack
+@onready var health_label: RichTextLabel = $CardImage/Stats/HealthImage/Health
+@onready var attack: Sprite2D = $CardImage/Stats/AttackImage
+@onready var health: Sprite2D = $CardImage/Stats/HealthImage
+@onready var ap_cost: Sprite2D = $ApCostImage     
+@onready var cost_label: RichTextLabel = $ApCostImage/Cost
+@onready var type: Sprite2D = $TypeImage	
+@onready var type_label: RichTextLabel = $TypeImage/Type
+
+# Define opaque and transparent modulate colors
+const MODULATE_OPAQUE = Color(1.0, 1.0, 1.0, 1.0) # ffffffff
+const MODULATE_TRANSPARENT = Color(1.0, 1.0, 1.0, 0.0) # ffffff00
+func _ready():
+	# It's good practice to ensure nodes are hidden/shown correctly on ready,
+	# though display_card will be the main controller.
+	# For example, if it should start blank or as a card back:
+	if is_instance_valid(card_image): card_image.visible = false
+	if is_instance_valid(health): health.modulate = MODULATE_TRANSPARENT
+	if is_instance_valid(attack): attack.modulate = MODULATE_TRANSPARENT
+	if is_instance_valid(ap_cost): ap_cost.modulate = MODULATE_TRANSPARENT
+	if is_instance_valid(type): type.modulate = MODULATE_TRANSPARENT
+	if is_instance_valid(card_back_image): card_back_image.visible = true
+	if is_instance_valid(card_outline): card_outline.visible = true
+	
+func display_card(card_data_source: BaseCard, show_face_up: bool):
+	if not is_instance_valid(self) or not has_node("CardImage"): # Check if essential nodes are ready
+		printerr("CardPreview: Not fully ready or essential nodes missing. Aborting display_card.")
+		return
+
+	if not is_instance_valid(card_data_source):
+		printerr("CardPreview: Invalid card_data_source provided.")
+		if is_instance_valid(card_back_image): card_back_image.visible = true
+		if is_instance_valid(card_image): card_image.visible = false
+		if is_instance_valid(ap_cost): ap_cost.visible = false
+		if is_instance_valid(type): type.visible = false
+		return
+
+	# Ensure all node references are valid before using them
+	var base_nodes_ok = is_instance_valid(card_image) and is_instance_valid(card_back_image) and \
+						is_instance_valid(card_outline)
+	var detail_nodes_ok = is_instance_valid(health) and \
+						  is_instance_valid(attack) and \
+						  is_instance_valid(ap_cost) and \
+						  is_instance_valid(type) and \
+						  is_instance_valid(cost_label) and is_instance_valid(type_label) and \
+						  is_instance_valid(attack_label) and is_instance_valid(health_label)
+	if not (base_nodes_ok and detail_nodes_ok):
+		printerr("CardPreview (", name, "): One or more child nodes for display are not valid.")
+		return
+	print("CardPreview (", name, "): display_card called. Card: ", card_data_source.name, ", Show Face Up: ", show_face_up)
+	# --- Set Card Face/Back Visibility ---
+	if show_face_up:
+		card_image.visible = true
+		card_back_image.visible = false
+		print("  Visibility: card_image=true, card_back_image=false")
+
+		# Update Card Art
+		if card_data_source.atlas_path_info != "" and card_data_source.atlas_region_info.size() == 4:
+			print("  Atlas info found: ", card_data_source.atlas_path_info)
+
+			var new_atlas = AtlasTexture.new()
+			var atlas_res = load(card_data_source.atlas_path_info)
+			
+			if atlas_res is Texture2D: # AtlasTexture's atlas is Texture2D
+				new_atlas.atlas = atlas_res if not atlas_res is AtlasTexture else atlas_res.atlas
+			else: 
+				printerr("CardPreview '", card_data_source.name, "': Failed to load atlas from path: ", card_data_source.atlas_path_info, " or it's not a Texture2D.")
+				card_image.texture = null
+			
+			if new_atlas.atlas:
+				print("  Set card_image texture from atlas.")
+				new_atlas.region = Rect2(
+					card_data_source.atlas_region_info[0], 
+					card_data_source.atlas_region_info[1], 
+					card_data_source.atlas_region_info[2], 
+					card_data_source.atlas_region_info[3]
+				)
+				card_image.texture = new_atlas
+			else:
+				
+				print("  Atlas was NULL after trying to load.")
+		else:
+			
+			card_image.texture = null
+			# print("CardPreview '", card_data_source.name, "': Missing atlas info for preview.")
+
+		# --- Modulate for Stats, AP, Type when FACE UP ---
+		var card_type = card_data_source.card_type_enum
+		var show_stats_for_this_type = true
+		var show_ap_cost_for_this_type = true 
+		var show_type_img_for_this_type = true
+
+		if GameConstants:
+			match card_type:
+				GameConstants.CardType.ARTIFACT, GameConstants.CardType.SPELL:
+					show_stats_for_this_type = false
+				GameConstants.CardType.PLOY:
+					if card_data_source.base_health <= 0:
+						show_stats_for_this_type = false
+		
+		# Set modulate for stats
+		if show_stats_for_this_type:
+			attack.modulate = MODULATE_OPAQUE
+			health.modulate = MODULATE_OPAQUE
+			attack_label.text = str(card_data_source.base_attack)
+			health_label.text = str(card_data_source.base_health)
+		else:
+			attack.modulate = MODULATE_TRANSPARENT
+			health.modulate = MODULATE_TRANSPARENT
+
+		# Set modulate for AP cost
+		if show_ap_cost_for_this_type: # Assuming always true for face-up preview
+			ap_cost.modulate = MODULATE_OPAQUE
+			cost_label.text = str(card_data_source.base_cost)
+		else:
+			ap_cost.modulate = MODULATE_TRANSPARENT
+		print("	 AP Cost modulate.a: ", ap_cost.modulate.a)
+		
+		# Set modulate for Type image
+		if show_type_img_for_this_type: # Assuming always true for face-up preview
+			type.modulate = MODULATE_OPAQUE
+			type_label.text = str(card_type) # Or GameConstants.CardType.keys()[card_type]
+		else:
+			type.modulate = MODULATE_TRANSPARENT
+		print("	 Type Image modulate.a: ", type.modulate.a)
+
+	else: # Show Face Down (Card Back)
+		print("	 Attempting FACE DOWN display for: ", card_data_source.name)
+		card_image.visible = false
+		card_back_image.visible = true
+
+		# Ensure details are transparent when face down
+		attack.modulate = MODULATE_TRANSPARENT
+		health.modulate = MODULATE_TRANSPARENT
+		ap_cost.modulate = MODULATE_TRANSPARENT
+		type.modulate = MODULATE_TRANSPARENT
+		print("	 Visibility: card_image=false, card_back_image=true. All details modulated to transparent.")
+		
+	card_outline.visible = true

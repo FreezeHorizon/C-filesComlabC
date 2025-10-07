@@ -1,0 +1,100 @@
+# PlacementChoice.gd
+extends Control # Or PanelContainer, whichever your root node is
+
+signal choice_made(place_is_face_up: bool)
+signal placement_cancelled
+
+# Adjust node paths based on your exact scene tree for PlacementChoice.tscn
+@onready var prompt_panel: PanelContainer = get_node("PanelContainer") # Or $PanelContainer
+
+@onready var face_up_clickable_area: Control = $PanelContainer/MarginContainer/HBoxContainer/FaceUpChoice
+@onready var face_up_preview: Node2D = $PanelContainer/MarginContainer/HBoxContainer/FaceUpChoice/VBoxContainer/FaceUpCardPreview
+@onready var face_up_label: RichTextLabel = $PanelContainer/MarginContainer/HBoxContainer/SetFaceDownChoice/VBoxContainer/SetFaceDownLabel
+@onready var set_face_down_clickable_area: Control = $PanelContainer/MarginContainer/HBoxContainer/SetFaceDownChoice
+@onready var set_face_down_preview: Node2D = $PanelContainer/MarginContainer/HBoxContainer/SetFaceDownChoice/VBoxContainer/SetFaceDownCardPreview
+@onready var set_face_down_label: RichTextLabel = $PanelContainer/MarginContainer/HBoxContainer/SetFaceDownChoice/VBoxContainer/SetFaceDownLabel
+
+@onready var cancel_button: TextureButton = get_node("CancelButton")
+
+var current_card_being_placed: BaseCard = null
+
+func _ready():
+	# Connect signals for the clickable areas
+	if is_instance_valid(face_up_clickable_area):
+		face_up_clickable_area.gui_input.connect(_on_face_up_area_gui_input)
+	else:
+		printerr("PlacementChoice: FaceUpChoice node not found or invalid path.")
+
+	if is_instance_valid(set_face_down_clickable_area):
+		set_face_down_clickable_area.gui_input.connect(_on_set_face_down_area_gui_input)
+	else:
+		printerr("PlacementChoice: SetFaceDownChoice node not found or invalid path.")
+
+	if is_instance_valid(cancel_button):
+		cancel_button.pressed.connect(_on_cancel_button_pressed)
+	else:
+		printerr("PlacementChoice: Cancel button node not found or invalid path.")
+	
+	# Set labels (can also be done in editor)
+	if is_instance_valid(face_up_label): face_up_label.text = "FaceUp" # Or "Flipped"
+	if is_instance_valid(set_face_down_label): set_face_down_label.text = "SetDown" # Or "Set"
+		
+	hide() # Start hidden
+
+func _on_face_up_area_gui_input(event: InputEvent):
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.is_pressed():
+		if not is_instance_valid(current_card_being_placed): return # Safety
+		print("PlacementChoice: Chose Face Up")
+		emit_signal("choice_made", true)
+		hide_prompt()
+
+func _on_set_face_down_area_gui_input(event: InputEvent):
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.is_pressed():
+		if not is_instance_valid(current_card_being_placed): return # Safety
+		print("PlacementChoice: Chose Face Down")
+		emit_signal("choice_made", false)
+		hide_prompt()
+
+func _on_cancel_button_pressed():
+	print("PlacementChoice: Cancelled")
+	emit_signal("placement_cancelled")
+	hide_prompt()
+
+# This function is called by BattleManager
+func show_prompt(card_to_place: BaseCard):
+	if not is_instance_valid(card_to_place):
+		printerr("PlacementChoice: Invalid card_to_place provided.")
+		return
+	print("PlacementChoice: show_prompt called for card: ", card_to_place.name)
+	current_card_being_placed = card_to_place
+
+	if is_instance_valid(face_up_preview) and face_up_preview.has_method("display_card"):
+		print("	 Calling display_card on face_up_preview (for face UP)")
+		face_up_preview.display_card(current_card_being_placed, true) 
+	else:
+		printerr("PlacementChoice: FaceUpPreview node (FaceUpCardPreview) is invalid or missing 'display_card' method.")
+
+	if is_instance_valid(set_face_down_preview) and set_face_down_preview.has_method("display_card"):
+		print("	 Calling display_card on set_face_down_preview (for face DOWN)")
+		set_face_down_preview.display_card(current_card_being_placed, false)
+	else:
+		printerr("PlacementChoice: SetFaceDownPreview node (SetFaceDownCardPreview) is invalid or missing 'display_card' method.")
+
+	# Positioning logic (example: center on screen)
+	# You might want to adjust this based on where you want the prompt.
+	# If your root is a Control node, anchors can handle this.
+	# If it's a PanelContainer, it often centers its content.
+	# If you need to manually center:
+	# self.position = (get_viewport_rect().size / 2) - (self.size / 2)
+	
+	# Make sure mouse filter allows clicks on this UI when visible
+	mouse_filter = Control.MOUSE_FILTER_STOP # Stops mouse events from passing through to game board
+
+	show()
+	# Optional: Grab focus for one of the areas if you want keyboard nav, but click is primary
+	# face_up_clickable_area.grab_focus()
+
+func hide_prompt():
+	current_card_being_placed = null
+	mouse_filter = Control.MOUSE_FILTER_IGNORE # Allow mouse events to pass through again
+	hide()

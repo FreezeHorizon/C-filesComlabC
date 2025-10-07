@@ -1,0 +1,196 @@
+# HostLobby.gd
+extends Control
+
+@onready var ip_display_label: RichTextLabel = $ColorRect/VBoxContainer/IPDisplayLabel
+@onready var port_display_label: RichTextLabel = $ColorRect/VBoxContainer/PortDisplayLabel
+@onready var player1_status_label: RichTextLabel = $ColorRect/VBoxContainer/PlayerListVBox/Player1/Player1StatusLabel
+@onready var p1_ready_indicator: CheckBox = $ColorRect/VBoxContainer/PlayerListVBox/Player1/P1ReadyIndicator
+@onready var player2_status_label: RichTextLabel = $ColorRect/VBoxContainer/PlayerListVBox/Player2/Player2StatusLabel
+@onready var p2_ready_indicator: CheckBox = $ColorRect/VBoxContainer/PlayerListVBox/Player2/P2ReadyIndicator
+@onready var ready_button: Button = $ColorRect/VBoxContainer/ReadyButton 
+@onready var lobby_status_label: RichTextLabel = $ColorRect/VBoxContainer/LobbyStatusLabel
+@onready var countdown_label: RichTextLabel = $ColorRect/VBoxContainer/CountdownLabel
+@onready var force_close_server_button: Button = $ColorRect/VBoxContainer/ForceCloseServerButton
+
+var local_player_is_ready: bool = false
+
+func _ready():
+	# 1. Display IP and Port
+	var local_ips: Array[String] = NetworkManager.get_local_ip_addresses() # <<< CALL ONCE AND STORE
+
+	if not local_ips.is_empty(): # Check if the stored array is not empty
+		# Display the first relevant IP, or join them if you want to show all
+		ip_display_label.text = "Host IP(s): " + local_ips[0] 
+		if local_ips.size() > 1: # If there are more IPs after the first one
+			# Create a new array excluding the first element for the "Others" part
+			var other_display_ips = local_ips.slice(1) # Get all elements from index 1 onwards
+			ip_display_label.text += " (Others: " + ", ".join(other_display_ips) + ")"
+	else:
+		ip_display_label.text = "Host IP(s): Could not determine" 
+	
+	port_display_label.text = "Port: " + str(NetworkManager.current_port)
+
+	# 2. Connect to NetworkManager signals
+	NetworkManager.player_list_updated.connect(_on_player_list_updated)
+	NetworkManager.player_readiness_updated.connect(_on_player_readiness_updated)
+	NetworkManager.all_players_ready_status_changed.connect(_on_all_players_ready_status_changed) # Renamed handler
+	NetworkManager.game_starting_countdown.connect(_on_game_starting_countdown)
+	NetworkManager.start_game_now.connect(_on_start_game_now)
+	
+	# 3. Connect to MultiplayerAPI signals (NetworkManager handles the core logic,
+	#    but HostLobby might want to update UI immediately for player count)
+	#    It's often cleaner to let NetworkManager emit a player_list_updated signal instead.
+	#    For this iteration, keeping them can be fine if NM's updates aren't immediate enough for UI.
+	if multiplayer.is_server(): 
+		multiplayer.peer_connected.connect(_on_lobby_peer_connected) # Renamed to avoid conflict if NM has same name
+		multiplayer.peer_disconnected.connect(_on_lobby_peer_disconnected) # Renamed
+
+	# 4. Initial UI Update
+	var host_id = multiplayer.get_unique_id() # Should be 1
+	if NetworkManager.players.has(host_id): # Ensure host data is in NetworkManager.players
+		local_player_is_ready = NetworkManager.players[host_id].is_ready
+		player1_status_label.text = NetworkManager.players[host_id].name + " (Host) - " + ("Ready" if local_player_is_ready else "Not Ready")
+		p1_ready_indicator.button_pressed = local_player_is_ready
+	else: # Fallback if host data somehow not yet in NM.players (should be via host_game)
+		player1_status_label.text = NetworkManager.get_player_name() + " (Host) - Not Ready"
+		p1_ready_indicator.button_pressed = false
+		# Ensure NetworkManager.players is updated if this happens, though host_game should do it.
+		# NetworkManager.players[host_id] = {"name": NetworkManager.get_player_name(), "is_ready": false} # This should be done in NM.host_game
+
+	player2_status_label.text = "Waiting for opponent..."
+	p2_ready_indicator.button_pressed = false
+	_update_lobby_status_label()
+	_update_ready_button_appearance()
+	countdown_label.visible = false
+
+
+func _on_ReadyButton_pressed() -> void:
+	local_player_is_ready = not local_player_is_ready
+	_update_ready_button_appearance()
+	# This RPCs the server (which is itself). NetworkManager.server_set_player_ready
+	# will then update its internal state and rpc to all clients (including this host).\
+	print("HostLobby: ReadyButton pressed. local_player_is_ready = ", local_player_is_ready, ". Calling NM.server_set_player_ready.")
+	NetworkManager.server_set_player_ready(local_player_is_ready)
+
+
+func _update_ready_button_appearance():
+	if local_player_is_ready:
+		ready_button.self_modulate = Color("00ee00") # Green
+		ready_button.text = "Ready!"
+	else:
+		ready_button.self_modulate = Color.WHITE # White (or your default button color)
+		ready_button.text = "Ready Up" # Changed from "Not Ready" for clarity
+
+
+func _on_ForceCloseServerButton_pressed() -> void:
+	NetworkManager.disconnect_from_game() 
+	get_tree().change_scene_to_file("res://UI/LANMenu.tscn") # Verify path
+
+
+# --- Signal Handlers for NetworkManager events ---
+func _on_player_list_updated(current_players_dict: Dictionary):
+	print("HostLobby: _on_player_list_updated: ", current_players_dict)
+	var host_id = multiplayer.get_unique_id() 
+
+	if current_players_dict.has(host_id):
+		var host_data = current_players_dict[host_id]
+		player1_status_label.text = host_data.name + " (Host) - " + ("Ready" if host_data.is_ready else "Not Ready")
+		p1_ready_indicator.button_pressed = host_data.is_ready
+		# Update local_player_is_ready if it changed via this signal (e.g. server reset it)
+		if local_player_is_ready != host_data.is_ready:
+			local_player_is_ready = host_data.is_ready
+			_update_ready_button_appearance()
+	else:
+		player1_status_label.text = "Host Data Error"
+		p1_ready_indicator.button_pressed = false
+
+	var opponent_found = false
+	for peer_id in current_players_dict:
+		if peer_id != host_id:
+			var opponent_data = current_players_dict[peer_id]
+			player2_status_label.text = opponent_data.name + " - " + ("Ready" if opponent_data.is_ready else "Not Ready")
+			p2_ready_indicator.button_pressed = opponent_data.is_ready
+			opponent_found = true
+			break 
+	if not opponent_found:
+		player2_status_label.text = "Waiting for opponent..."
+		p2_ready_indicator.button_pressed = false
+	
+	_update_lobby_status_label()
+
+
+func _on_player_readiness_updated(peer_id: int, is_ready: bool):
+	print("HostLobby: _on_player_readiness_updated CALLED. Peer: ", peer_id, " Ready: ", is_ready)
+	var ready_text = "Ready" if is_ready else "Not Ready"
+	var player_name_text = "Player " + str(peer_id) 
+
+	if NetworkManager.players.has(peer_id): 
+		player_name_text = NetworkManager.players[peer_id].name
+	
+	if peer_id == multiplayer.get_unique_id(): # This is the host
+		print("    HostLobby: Setting p1_ready_indicator.button_pressed to: ", is_ready) # DEBUG
+		player1_status_label.text = player_name_text + " (Host) - " + ready_text
+		p1_ready_indicator.button_pressed = is_ready # <<< THIS SHOULD UPDATE THE CHECKBOX
+		if local_player_is_ready != is_ready: # Sync local var if changed by server signal
+			local_player_is_ready = is_ready
+			_update_ready_button_appearance() # Update button if needed
+	elif NetworkManager.players.has(peer_id): # This is an update FOR THE OPPONENT (client) on the HOST'S screen
+		print("    HostLobby: Updating OPPONENT'S UI (P2) on host screen. Peer: ", peer_id) # <<< THIS PRINT
+		player2_status_label.text = player_name_text + " - " + ready_text
+		if is_instance_valid(p2_ready_indicator): 
+			p2_ready_indicator.button_pressed = is_ready # <<< THIS LINE
+			print("      HostLobby: p2_ready_indicator.button_pressed set to: ", is_ready) # <<< THIS PRINT
+		else:
+			printerr("      HostLobby: p2_ready_indicator is NULL!")
+	else:
+		print("HostLobby: Received readiness for unknown peer_id: ", peer_id)
+
+
+func _on_all_players_ready_status_changed(all_are_ready: bool): # Renamed from _on_all_players_ready
+	if all_are_ready:
+		print("HostLobby: All players are ready. Countdown should be starting/active.")
+		ready_button.disabled = true 
+	else:
+		print("HostLobby: Not all players are ready.")
+		ready_button.disabled = false
+		countdown_label.visible = false # Hide countdown if someone un-readies
+		# NetworkManager.server_cancel_countdown() # NM should handle this internally when status changes
+
+
+func _on_game_starting_countdown(time_left: int):
+	if time_left > 0:
+		countdown_label.text = "Game starting in: " + str(time_left) + "..."
+		countdown_label.visible = true
+		ready_button.disabled = true 
+	else: # time_left is 0
+		countdown_label.text = "Starting game!"
+		# The actual scene change will be triggered by NetworkManager's "start_game_now" signal.
+
+# Removed _on_all_players_no_longer_ready as _on_all_players_ready_status_changed(false) covers it.
+
+# --- Signal Handlers for direct MultiplayerAPI events ---
+# These are more for immediate player count updates in the lobby status label.
+# NetworkManager will handle updating the 'players' dictionary and emitting 'player_list_updated'.
+func _on_lobby_peer_connected(_peer_id: int): # Parameter name changed to avoid shadowing
+	print("HostLobby: Direct peer_connected signal received.")
+	_update_lobby_status_label()
+
+
+func _on_lobby_peer_disconnected(_peer_id: int): # Parameter name changed
+	print("HostLobby: Direct peer_disconnected signal received.")
+	# When a peer disconnects, NetworkManager will update its list and emit player_list_updated.
+	# That signal will then refresh the player labels.
+	# We just need to update the count here.
+	_update_lobby_status_label()
+	player2_status_label.text = "Waiting for opponent..." # Reset P2 display
+	p2_ready_indicator.button_pressed = false
+
+
+func _update_lobby_status_label():
+	var player_count = NetworkManager.players.size() # More reliable source
+	lobby_status_label.text = "Server Online: " + str(player_count) + "/" + str(NetworkManager.max_players) + " Players"
+
+
+func _on_start_game_now():
+	print("HostLobby: Received start_game_now. Changing to GameScene.")
+	get_tree().change_scene_to_file("res://Main.tscn") # Ensure this is your actual game scene path

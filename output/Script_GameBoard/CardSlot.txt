@@ -1,0 +1,115 @@
+extends Node2D
+
+@onready var move_circle = $CardActionOverlay/MoveCircle
+@onready var attack_circle = $CardActionOverlay/AttackCircle
+@onready var spell_circle = $CardActionOverlay/SpellCircle
+@onready var artifact_circle = $CardActionOverlay/ArtifactCircle
+@onready var placement_circle = $CardActionOverlay/PlacementCircle
+@onready var card_action_overlay = $CardActionOverlay
+@onready var slot_collision = $Area2D/CollisionShape2D
+var is_occupied:bool = false
+var is_highlighted:bool = false
+var card_in_slot:Node2D = null  # Reference to the card in this slot
+var is_enemy:bool = false
+const DEFAULT_SLOT_COLLISION_SCALING = Vector2(1,1) # this is for current selected card_slot
+const OVERLAY_COLLISION_SCALING = Vector2(0.65,0.65) # this is for anything else (this is the size of the pointer)
+
+func _ready() -> void:
+	# Make sure all overlays start hidden
+	reset_overlays()
+	
+	add_to_group("CardSlots")
+	
+	var collision_area = $Area2D
+	if collision_area:
+		collision_area.collision_mask = 2
+
+	var collision_shape = $Area2D/CollisionShape2D
+	if collision_shape:
+		# Set the clickable area to just the sprite pointer
+		collision_shape.scale = DEFAULT_SLOT_COLLISION_SCALING
+
+	# Add this slot to the CardSlots group for easier access
+	add_to_group("CardSlots")
+
+func reset_overlays():
+	move_circle.visible = false
+	attack_circle.visible = false
+	spell_circle.visible = false
+	artifact_circle.visible = false
+	placement_circle.visible = false
+	card_action_overlay.visible = false
+	is_highlighted = false
+	if slot_collision:
+		slot_collision.scale = DEFAULT_SLOT_COLLISION_SCALING
+
+func highlight_for_movement():
+	if is_occupied:
+		card_action_overlay.visible = true
+		move_circle.visible = true
+		is_highlighted = true
+		card_action_overlay.z_index = 3
+		slot_collision.scale = OVERLAY_COLLISION_SCALING
+	if not is_occupied:
+		card_action_overlay.visible = true
+		move_circle.visible = true
+		is_highlighted = true
+		slot_collision.scale = OVERLAY_COLLISION_SCALING
+
+func highlight_for_attack():
+	if is_occupied:
+		card_action_overlay.visible = true
+		attack_circle.visible = true
+		is_highlighted = true
+		card_action_overlay.z_index = 3
+		slot_collision.scale = OVERLAY_COLLISION_SCALING
+	if not is_occupied:
+		card_action_overlay.visible = true
+		attack_circle.visible = true
+		is_highlighted = true
+		slot_collision.scale = OVERLAY_COLLISION_SCALING
+
+func highlight_for_spell_target():
+	card_action_overlay.visible = true
+	spell_circle.visible = true
+	is_highlighted = true
+	slot_collision.scale = OVERLAY_COLLISION_SCALING
+
+func highlight_for_artifact():
+	card_action_overlay.visible = true
+	artifact_circle.visible = true
+	is_highlighted = true
+	slot_collision.scale = OVERLAY_COLLISION_SCALING
+
+func highlight_for_placement(valid):
+	if valid and not is_occupied:
+		card_action_overlay.visible = true
+		placement_circle.visible = true
+		is_highlighted = true
+		# print("Showing placement overlay at: ", name)
+func update_highlight(mode, valid=false):
+	#reset_overlays()
+	match mode:
+		"move":
+			highlight_for_movement()
+		"attack":
+			highlight_for_attack()
+		"spell":
+			highlight_for_spell_target()
+		"artifact":
+			highlight_for_artifact()
+		"placement":
+			highlight_for_placement(valid)
+
+# New functions for adjacency checking
+func is_valid_initial_placement() -> bool:
+	# For Emperor initial placement
+	return true
+
+func is_adjacent_to_emperor() -> bool:
+	# This would be handled by the CardManager's manhattan distance calculation
+	return false
+
+func is_adjacent_to_ally() -> bool:
+	# This would be handled by the CardManager's adjacency check
+	return false

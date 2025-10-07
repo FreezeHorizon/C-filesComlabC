@@ -1,0 +1,261 @@
+# PlayerHand.gd
+class_name PlayerHand
+extends Node2D
+
+# --- Constants for Card Visuals and Layout ---
+const CARD_BASE_WIDTH: float = 227.0 # Actual width of the card texture/sprite
+const CARD_IN_HAND_SCALE_FACTOR: float = 0.5 # The scale applied to cards when in hand
+const SCALED_CARD_WIDTH_IN_HAND: float = CARD_BASE_WIDTH * CARD_IN_HAND_SCALE_FACTOR
+
+const HAND_Y_POSITION: int = 700 # Base Y position for cards in hand
+const DEFAULT_CARD_MOVE_SPEED: float = 0.4 # Animation speed for card movements
+const HOVER_LIFT_AMOUNT: float = 50.0 # How much card lifts vertically (negative Y is up)
+
+# Base Push Values (will be scaled by overlap factor)
+const BASE_HOVER_PUSH_ADJACENT: float = 50.0  # Base push for card directly next to hovered one
+const BASE_HOVER_PUSH_SECOND_NEIGHBOR: float = 25.0 # Base push for card two away
+
+# Z-index constants
+const Z_INDEX_HOVERED_CARD: int = 20 # Significantly higher to ensure it's on top
+const Z_INDEX_BASE_IN_HAND: int = 2   # Base Z for cards resting in hand
+# Non-hovered cards will get Z_INDEX_BASE_IN_HAND + their index in hand for stacking
+
+# Hand area definition
+const HAND_START_X: int = 260 # Left boundary of the hand area
+const HAND_VISIBLE_WIDTH: int = 700 # Total width of the area cards should visually occupy
+
+# Configuration for spacing
+const MAX_CARDS_FOR_GENEROUS_SPACING: int = 6 # Cards will spread more if count <= this
+const MIN_EFFECTIVE_SPACING_FACTOR: float = 0.3 # Min part of card width for spacing in extreme overlap (e.g., 30% of card width is the tightest cards can be spaced center-to-center)
+
+# --- Variables ---
+var player_hand_cards: Array[Card] = [] # Array to store Card nodes currently in hand
+var currently_truly_hovered_card: Card = null # The card currently considered hovered by PlayerHand
+var current_overlap_factor: float = 0.0 # Stores how much cards are overlapping: 0 = no overlap, 1 = max forced overlap
+
+var card_just_returned_from_drag: Card = null 
+var ignore_hover_for_card_frames: int = 0 # Number of _process frames to ignore hover for this card
+const FRAMES_TO_IGNORE_HOVER: int = 3    # How many frames to ignore it
+var processing_paused: bool = false
+
+# --- Node References ---
+@onready var card_manager_reference: Node2D = $"../CardManager" # Reference to CardManager
+@onready var mulligan_manager_ref = $"../MulliganManager" # Reference to MulliganManager
+
+#-----------------------------------------------------------------------------
+# BUILT-IN GODOT METHODS
+#-----------------------------------------------------------------------------
+func _process(_delta: float) -> void:
+	# --- Mulligan Phase Handling ---
+	if mulligan_manager_ref and mulligan_manager_ref.mull_phase:
+		if currently_truly_hovered_card != null: # If a card IS currently marked as hovered
+			if is_instance_valid(currently_truly_hovered_card) and \
+			   currently_truly_hovered_card.state_machine.get_current_state() == currently_truly_hovered_card.state_machine.State.HOVERING:
+				currently_truly_hovered_card.state_machine.transition_to(currently_truly_hovered_card.state_machine.State.IN_HAND)
+			currently_truly_hovered_card = null 
+			update_all_card_visuals_in_hand(DEFAULT_CARD_MOVE_SPEED) 
+		return # IMPORTANT: Stop further processing if in mulligan phase
+
+	if processing_paused:
+		return	# Skip all hover/update logic if paused
+		
+	# --- DRAGGING OVERRIDE: If a card is being dragged, NO hand hover ---
+
+	if card_manager_reference.card_being_dragged != null:
+		
+		if currently_truly_hovered_card != null: # If a card in hand WAS hovered
+			if is_instance_valid(currently_truly_hovered_card) and \
+			   currently_truly_hovered_card.state_machine.get_current_state() == currently_truly_hovered_card.state_machine.State.HOVERING:
+				currently_truly_hovered_card.state_machine.transition_to(currently_truly_hovered_card.state_machine.State.IN_HAND)
+			currently_truly_hovered_card = null 
+			update_all_card_visuals_in_hand(DEFAULT_CARD_MOVE_SPEED) 
+		return # IMPORTANT: Stop further hover processing if a card is being dragged
+
+# --- Decrement ignore hover frame counter ---
+	if ignore_hover_for_card_frames > 0:
+		ignore_hover_for_card_frames -= 1
+		if ignore_hover_for_card_frames == 0:
+			if not is_instance_valid(card_just_returned_from_drag):
+				card_just_returned_from_drag.name = "Unknown"
+			print("PlayerHand: Finished ignoring hover for card: ", card_just_returned_from_drag.name)
+			card_just_returned_from_drag = null # Clear the reference
+
+	var intended_hover_card: Card = _get_topmost_hand_card_under_mouse()
+
+	if intended_hover_card != currently_truly_hovered_card:
+		var old_hovered_card: Card = currently_truly_hovered_card
+		currently_truly_hovered_card = intended_hover_card
+
+		update_all_card_visuals_in_hand(DEFAULT_CARD_MOVE_SPEED)
+
+		if old_hovered_card and is_instance_valid(old_hovered_card):
+			if old_hovered_card.state_machine.get_current_state() == old_hovered_card.state_machine.State.HOVERING:
+				old_hovered_card.state_machine.transition_to(old_hovered_card.state_machine.State.IN_HAND, GameConstants.TriggerSource.GAME_RULE)
+		
+		if currently_truly_hovered_card and is_instance_valid(currently_truly_hovered_card):
+			if currently_truly_hovered_card.state_machine.get_current_state() == currently_truly_hovered_card.state_machine.State.IN_HAND:
+				currently_truly_hovered_card.state_machine.transition_to(currently_truly_hovered_card.state_machine.State.HOVERING, GameConstants.TriggerSource.GAME_RULE)
+
+func set_processing_paused(pause: bool):
+	processing_paused = pause
+	print("PlayerHand processing_paused set to: ", processing_paused) # For debugging
+
+func add_card_to_hand(card: Card, speed: float) -> void:
+	if card not in player_hand_cards:
+		player_hand_cards.append(card)
+		
+		var initial_state_before_add = card.state_machine.get_current_state() # Get state BEFORE transition
+		var current_card_scale = card.scale
+		
+		print("PlayerHand: Adding ", card.name, " to hand. Initial state on add: ", initial_state_before_add, " Initial scale: ", current_card_scale)
+
+		if initial_state_before_add != card.state_machine.State.IN_HAND:
+			print("  Transitioning ", card.name, " from state ", initial_state_before_add, " to IN_HAND.")
+			card.state_machine.transition_to(card.state_machine.State.IN_HAND, GameConstants.TriggerSource.PLAYER_CHOICE)
+			# After transition, CardStateMachine should have set the correct IN_HAND scale (0.5)
+			print("  Scale for ", card.name, " after IN_HAND transition attempt: ", card.scale)
+		else: # Already IN_HAND, check scale
+			var target_in_hand_scale = card.state_machine.state_config[card.state_machine.State.IN_HAND]["scale"]
+			if card.scale != target_in_hand_scale:
+				print("  Card ", card.name, " is IN_HAND but has incorrect scale ", card.scale, ". Forcing scale to ", target_in_hand_scale)
+				card.scale = target_in_hand_scale
+		
+		# If the card was just being dragged, mark it to be ignored by hover for a few frames
+		if initial_state_before_add == card.state_machine.State.DRAGGING:
+			print("  Marking ", card.name, " as just_returned_from_drag.")
+			card_just_returned_from_drag = card
+			ignore_hover_for_card_frames = FRAMES_TO_IGNORE_HOVER
+		
+		update_all_card_visuals_in_hand(speed) # This starts the tween to its resting place
+		# The emperor is a special case in your log - it arrives with state 1 and scale 0.5.
+		# The above logic will see it's IN_HAND and its scale matches the target, so no change needed for it.
+		
+		update_all_card_visuals_in_hand(speed)
+
+func remove_card_from_hand(card: Card) -> void:
+	if card in player_hand_cards:
+		var was_hovered: bool = (card == currently_truly_hovered_card)
+		player_hand_cards.erase(card) # Erase ONCE
+		if was_hovered:
+			currently_truly_hovered_card = null
+		update_all_card_visuals_in_hand(DEFAULT_CARD_MOVE_SPEED)
+
+func _get_topmost_hand_card_under_mouse() -> Card:
+	var globally_topmost_card: Card = card_manager_reference.raycast_check_for_card()
+	if is_instance_valid(globally_topmost_card) and \
+		globally_topmost_card == card_just_returned_from_drag and \
+		ignore_hover_for_card_frames > 0:
+		print("  PlayerHand Hover Check: Ignoring ", globally_topmost_card.name, " for hover (frames left: ", ignore_hover_for_card_frames, ")")
+		return null
+	if globally_topmost_card and \
+		globally_topmost_card in player_hand_cards and \
+		globally_topmost_card != card_manager_reference.card_being_dragged:
+		
+		return globally_topmost_card
+	return null
+
+func update_all_card_visuals_in_hand(animation_speed: float) -> void:
+	var card_count: int = player_hand_cards.size()
+	if card_count == 0:
+		return
+
+	var base_x_positions: Array = _calculate_base_x_positions(card_count) # This also sets current_overlap_factor
+	var hovered_idx: int = -1
+	if currently_truly_hovered_card:
+		hovered_idx = player_hand_cards.find(currently_truly_hovered_card)
+
+	var dynamic_push_multiplier: float = 0.3 + (0.7 * pow(current_overlap_factor, 0.5)) 
+	if card_count <= 3: 
+		dynamic_push_multiplier = clamp(dynamic_push_multiplier * 0.5, 0.2, 1.0)
+	
+	var actual_hover_push_adjacent = BASE_HOVER_PUSH_ADJACENT * dynamic_push_multiplier
+	var actual_hover_push_second_neighbor = BASE_HOVER_PUSH_SECOND_NEIGHBOR * dynamic_push_multiplier
+
+	for i in range(card_count):
+		var card: Card = player_hand_cards[i]
+		var target_pos_x: float = base_x_positions[i]
+		var target_pos_y: float = HAND_Y_POSITION
+
+		if card == currently_truly_hovered_card:
+			target_pos_y = HAND_Y_POSITION - HOVER_LIFT_AMOUNT
+			card.z_index = Z_INDEX_HOVERED_CARD
+		else:
+			card.z_index = Z_INDEX_BASE_IN_HAND + i # Granular Z for non-hovered cards
+
+			if hovered_idx != -1: 
+				var dist_from_hover: int = i - hovered_idx
+				var push_amount: float = 0.0
+				
+				if abs(dist_from_hover) == 1:
+					push_amount = actual_hover_push_adjacent
+				elif abs(dist_from_hover) == 2:
+					push_amount = actual_hover_push_second_neighbor
+				
+				if dist_from_hover != 0:
+					target_pos_x += sign(dist_from_hover) * push_amount
+		
+		var current_visual_card_width: float = CARD_BASE_WIDTH * card.scale.x
+		var half_current_visual_width: float = current_visual_card_width * 0.5
+		target_pos_x = clamp(target_pos_x, 
+							 HAND_START_X + half_current_visual_width, 
+							 HAND_START_X + HAND_VISIBLE_WIDTH - half_current_visual_width)
+
+		animate_card_to_position(card, Vector2(target_pos_x, target_pos_y), animation_speed)
+
+func _calculate_base_x_positions(card_count: int) -> Array:
+	var positions: Array = []
+	if card_count == 0:
+		current_overlap_factor = 0.0
+		return positions
+
+	var total_cards_width_if_no_overlap = card_count * SCALED_CARD_WIDTH_IN_HAND
+	var spacing_between_card_centers: float
+
+	if total_cards_width_if_no_overlap <= HAND_VISIBLE_WIDTH:
+		current_overlap_factor = 0.0 # No forced overlap by width constraint
+		if card_count <= MAX_CARDS_FOR_GENEROUS_SPACING:
+			var desired_spacing = HAND_VISIBLE_WIDTH / float(card_count) if card_count > 0 else SCALED_CARD_WIDTH_IN_HAND
+			spacing_between_card_centers = clamp(desired_spacing, 
+												 SCALED_CARD_WIDTH_IN_HAND * 0.90, # Min 90% of card width when spread
+												 SCALED_CARD_WIDTH_IN_HAND * 1.15) # Max 115% of card width when spread
+			if card_count == 1: # Ensure single card doesn't use this for "spacing"
+				spacing_between_card_centers = SCALED_CARD_WIDTH_IN_HAND 
+		else: 
+			spacing_between_card_centers = SCALED_CARD_WIDTH_IN_HAND
+	else: # Cards MUST overlap to fit within HAND_VISIBLE_WIDTH
+		spacing_between_card_centers = HAND_VISIBLE_WIDTH / float(card_count)
+		
+		var min_possible_spacing = SCALED_CARD_WIDTH_IN_HAND * MIN_EFFECTIVE_SPACING_FACTOR
+		if SCALED_CARD_WIDTH_IN_HAND > min_possible_spacing: # Avoid division by zero or negative results
+			# Calculate how much we've moved from "no overlap" (SCALED_CARD_WIDTH_IN_HAND) 
+			# towards "max overlap" (min_possible_spacing)
+			var range_of_spacing = SCALED_CARD_WIDTH_IN_HAND - min_possible_spacing
+			var current_progress_in_range = SCALED_CARD_WIDTH_IN_HAND - spacing_between_card_centers
+			current_overlap_factor = current_progress_in_range / range_of_spacing
+			current_overlap_factor = clamp(current_overlap_factor, 0.0, 1.0)
+		else: # Cards are already at or below min_possible_spacing (extreme case)
+			current_overlap_factor = 1.0 
+		
+		spacing_between_card_centers = max(spacing_between_card_centers, min_possible_spacing)
+
+	var total_visual_span_of_hand: float
+	if card_count > 0:
+		total_visual_span_of_hand = ((card_count - 1) * spacing_between_card_centers) + SCALED_CARD_WIDTH_IN_HAND
+	else:
+		total_visual_span_of_hand = 0.0
+
+	var first_card_left_edge_x: float = HAND_START_X + (HAND_VISIBLE_WIDTH - total_visual_span_of_hand) / 2.0
+
+	for i in range(card_count):
+		var card_center_x: float
+		if card_count == 1: # Perfect center for a single card
+			card_center_x = HAND_START_X + HAND_VISIBLE_WIDTH / 2.0
+		else:
+			card_center_x = first_card_left_edge_x + (SCALED_CARD_WIDTH_IN_HAND / 2.0) + (i * spacing_between_card_centers)
+		positions.append(card_center_x)
+	
+	return positions
+
+func animate_card_to_position(card: Node, new_position: Vector2, speed: float) -> void:
+	var tween: Tween = get_tree().create_tween()
+	tween.tween_property(card, "position", new_position, speed).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)

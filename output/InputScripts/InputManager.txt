@@ -1,0 +1,189 @@
+# InputManager.gd
+class_name InputManager
+extends Node2D
+
+# --- Signals ---
+signal left_mouse_button_clicked
+signal left_mouse_button_released
+signal card_drag_initiated(card_node: BaseCard)
+signal board_card_move_intent(card_to_move: BaseCard, target_slot: Node2D)
+signal mulligan_card_toggled(card_node: BaseCard)
+signal board_card_deselected_intent(card_node: BaseCard) 
+signal slot_clicked_intent(slot_node: Node2D, selected_card_before_click: BaseCard) # Can keep selected_card_before_click as null if not applicable
+signal deck_draw_card_intent
+signal attack_intent(attacking_card: BaseCard, defending_card: BaseCard)
+signal card_single_clicked_on_board_intent(card_node: BaseCard)
+signal card_double_clicked_on_board_intent(card_node: BaseCard)
+
+# --- Constants ---
+const COLLISION_MASK_CARD = 1
+const COLLISION_MASK_DECK = 4
+const COLLISION_MASK_CARD_SLOT = 2
+
+# --- Node References ---
+var card_manager_reference: Node2D
+var deck_reference: Node2D
+var mulligan_manager_ref 
+@onready var battle_manager_ref: Node = get_node("%BattleManager")
+@onready var click_timer: Timer = $ClickTimer
+# --- Vars for Timer-Based Double-Click ---
+var first_click_card_candidate: BaseCard = null 
+
+func _ready():
+	card_manager_reference = $"../CardManager"
+	deck_reference = $"../Deck"
+	mulligan_manager_ref = $"../MulliganManager"
+
+	if is_instance_valid(click_timer):
+		click_timer.timeout.connect(_on_click_timer_timeout)
+	else:
+		printerr("InputManager: ClickTimer node not found or path incorrect! Path used: $ClickTimer")
+
+func _input(event: InputEvent) -> void:
+	if is_instance_valid(battle_manager_ref) and battle_manager_ref.is_waiting_for_placement_choice:
+		return 
+		
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.is_pressed():
+			emit_signal("left_mouse_button_clicked")
+			
+			# --- HIGHEST PRIORITY: Mulligan Phase ---
+			if is_instance_valid(mulligan_manager_ref) and mulligan_manager_ref.mull_phase:
+				var clicked_mulligan_card: BaseCard = _get_mulligan_card_under_cursor()
+				if is_instance_valid(clicked_mulligan_card):
+					emit_signal("mulligan_card_toggled", clicked_mulligan_card)
+					return
+
+			# --- NEXT PRIORITY: Action with an ALREADY SELECTED card on a valid TARGET ---
+			var already_selected_card: BaseCard = card_manager_reference.selection.get_selected_card()
+			if is_instance_valid(already_selected_card):
+				var slot_hit_by_raycast: Node2D = card_manager_reference.raycast_check_for_card_slot()
+				if is_instance_valid(slot_hit_by_raycast) and slot_hit_by_raycast.is_highlighted:
+					# Clicked a highlighted slot while a card was selected
+					if slot_hit_by_raycast.is_occupied and \
+					   is_instance_valid(slot_hit_by_raycast.card_in_slot) and \
+					   card_manager_reference.placement.is_enemy_card(already_selected_card, slot_hit_by_raycast.card_in_slot) and \
+					   slot_hit_by_raycast.attack_circle.visible:
+						print("InputManager (Action with Selected): Emitting attack_intent.")
+						emit_signal("attack_intent", already_selected_card, slot_hit_by_raycast.card_in_slot)
+						return 
+					elif slot_hit_by_raycast.move_circle.visible:
+						print("InputManager (Action with Selected): Emitting board_card_move_intent.")
+						emit_signal("board_card_move_intent", already_selected_card, slot_hit_by_raycast)
+						return
+					# If highlighted but not attack/move, it might be an unhandled action or just a visual cue.
+					# For now, if it's highlighted, we assume it's for a specific intent above.
+					# If not, the click might fall through to deselection or selecting the item in the slot.
+			
+			# --- If not an action with an already selected card, THEN check for board card single/double click ---
+			var clicked_board_card: BaseCard = _get_card_under_cursor_for_board_actions()
+			if is_instance_valid(clicked_board_card):
+				if click_timer.is_stopped():
+					first_click_card_candidate = clicked_board_card
+					click_timer.start()
+					print("InputManager: First click on board card '", clicked_board_card.name, "'. Timer started.")
+				else: 
+					if first_click_card_candidate == clicked_board_card:
+						click_timer.stop()
+						if clicked_board_card.is_face_down and \
+						   is_instance_valid(clicked_board_card.state_machine) and \
+						   clicked_board_card.state_machine.get_current_state() == clicked_board_card.state_machine.State.SELECTED:
+							print("InputManager: Double-click on SELECTED, FACE-DOWN card '", clicked_board_card.name, "'. Emitting flip intent.")
+							emit_signal("card_double_clicked_on_board_intent", clicked_board_card)
+						else:
+							print("InputManager: Double-click on '", clicked_board_card.name, "' but not valid for flip. Resolving first click as single.")
+							emit_signal("card_single_clicked_on_board_intent", first_click_card_candidate) 
+						first_click_card_candidate = null
+					else: 
+						if is_instance_valid(first_click_card_candidate):
+							emit_signal("card_single_clicked_on_board_intent", first_click_card_candidate)
+						first_click_card_candidate = clicked_board_card
+						click_timer.start()
+						print("InputManager: First click on NEW board card '", clicked_board_card.name, "'. Timer started.")
+				return # Board card click (single/double candidate) handled.
+			
+			# --- If not any of the above specific interactions ---
+			if not click_timer.is_stopped() and is_instance_valid(first_click_card_candidate):
+				click_timer.stop() # Click was elsewhere, resolve pending single click
+				emit_signal("card_single_clicked_on_board_intent", first_click_card_candidate)
+				first_click_card_candidate = null
+			
+			_process_other_click_targets() # Handles drag from hand, deck, empty space deselection, generic slot click
+				
+		elif event.is_released():
+			emit_signal("left_mouse_button_released")
+
+func _on_click_timer_timeout():
+	if is_instance_valid(first_click_card_candidate):
+		print("InputManager: ClickTimer timed out. Card '", first_click_card_candidate.name, "' gets single click on board.")
+		emit_signal("card_single_clicked_on_board_intent", first_click_card_candidate)
+		first_click_card_candidate = null
+
+func _get_card_under_cursor_for_board_actions() -> BaseCard:
+	var card_node: BaseCard = card_manager_reference.raycast_check_for_card()
+	if is_instance_valid(card_node) and is_instance_valid(card_node.card_is_in_slot):
+		return card_node
+	return null
+
+func _get_mulligan_card_under_cursor() -> BaseCard:
+	var space_state: PhysicsDirectSpaceState2D = get_world_2d().direct_space_state
+	var parameters: PhysicsPointQueryParameters2D = PhysicsPointQueryParameters2D.new()
+	parameters.collide_with_areas = true
+	parameters.position = get_global_mouse_position()
+	parameters.collision_mask = COLLISION_MASK_CARD
+	
+	var results: Array = space_state.intersect_point(parameters) # Renamed for clarity
+	if results.size() > 0:
+		var highest_z_index = -1
+		var highest_card_node: BaseCard = null # Type hint
+		for result in results:
+			var collider = result.collider
+			if is_instance_valid(collider):
+				var current_card_node = collider.get_parent() # Assuming Area2D is child of Card
+				if current_card_node is BaseCard and \
+				   is_instance_valid(mulligan_manager_ref) and \
+				   current_card_node in mulligan_manager_ref.cards_in_mulligan and \
+				   current_card_node.z_index > highest_z_index:
+					highest_z_index = current_card_node.z_index
+					highest_card_node = current_card_node
+		return highest_card_node
+	return null
+
+# _process_other_click_targets() no longer needs to check for actionable intents with a selected card,
+# as that's now handled earlier in _input().
+func _process_other_click_targets() -> void:
+	if is_instance_valid(battle_manager_ref) and battle_manager_ref.is_waiting_for_placement_choice:
+		return
+
+	var currently_selected_card: BaseCard = card_manager_reference.selection.get_selected_card()
+	var card_hit_by_raycast: BaseCard = card_manager_reference.raycast_check_for_card()
+	var slot_hit_by_raycast: Node2D = card_manager_reference.raycast_check_for_card_slot()
+
+	# Priority 1: Drag from Hand (if click wasn't on a board card that started a timer)
+	if is_instance_valid(card_hit_by_raycast) and not is_instance_valid(card_hit_by_raycast.card_is_in_slot):
+		emit_signal("card_drag_initiated", card_hit_by_raycast)
+		return
+
+	# Priority 2: Click on Deck
+	var space_state: PhysicsDirectSpaceState2D = get_world_2d().direct_space_state
+	var parameters: PhysicsPointQueryParameters2D = PhysicsPointQueryParameters2D.new()
+	parameters.collide_with_areas = true
+	parameters.position = get_global_mouse_position()
+	parameters.collision_mask = COLLISION_MASK_DECK
+	var deck_results: Array = space_state.intersect_point(parameters)
+	if deck_results.size() > 0:
+		emit_signal("deck_draw_card_intent")
+		return
+		
+	# Priority 3: Deselection by clicking empty space or non-actionable slot when a card IS selected
+	if is_instance_valid(currently_selected_card): 
+		# This means a card is selected, but the click wasn't on another board card (handled by single/double),
+		# wasn't an actionable slot (handled by specific intent), wasn't a hand card, wasn't the deck.
+		# So, it's a click on empty space or a non-actionable slot.
+		emit_signal("board_card_deselected_intent", currently_selected_card)
+		return 
+	
+	# Priority 4: Click on a generic slot when NO card is selected
+	if not is_instance_valid(currently_selected_card) and is_instance_valid(slot_hit_by_raycast):
+		emit_signal("slot_clicked_intent", slot_hit_by_raycast, null)
+		return

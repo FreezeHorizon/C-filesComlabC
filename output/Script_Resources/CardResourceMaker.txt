@@ -1,0 +1,73 @@
+extends Node
+
+const CARD_DATABASE_PATH = "res://Scripts/CardDatabase.gd"
+const BASE_UNIT_PATH = "res://units/"
+const CARD_RESOURCE_PATH = "res://Scripts/CardResource.tres"
+
+var card_database
+
+var FACTION_MAP = {
+	0: "neutral",
+	1: "ars_goetia",
+	2: "cthulhu_call",
+	3: "lost_paradise",
+	4: "veda_deities",
+	5: "olympus",
+	6: "onmyodo",
+	7: "pharoah_curse",
+	8: "shen_zhou",
+	9: "yggdrasil"
+}
+func _ready():
+	print("Auto-generation started...")
+	load_card_database()
+	auto_generate_tres_files()
+
+func load_card_database():
+	var script = load(CARD_DATABASE_PATH)
+	if script:
+		card_database = script.new()
+	else:
+		print("Error: CardDatabase not found!")
+
+func auto_generate_tres_files():
+	if not card_database or not "CARDS" in card_database:
+		print("Error: No card data found!")
+		return
+	
+	for card_name in card_database.CARDS.keys():
+		var card_data = card_database.CARDS[card_name]
+		
+		# Convert faction index to correct name
+		var faction_index = card_data.get("faction", 0)  # Default to 0 (neutral)
+		var faction = FACTION_MAP.get(faction_index, "neutral") 
+		
+		var faction_folder = BASE_UNIT_PATH + faction + "/"
+		var file_path = faction_folder + card_name + ".tres"
+
+		# Ensure the folder exists
+		if not DirAccess.dir_exists_absolute(faction_folder):
+			DirAccess.make_dir_recursive_absolute(faction_folder)
+
+		# Only create if the file doesn't exist
+		if not FileAccess.file_exists(file_path):
+			create_card_resource(file_path, card_name, card_data)
+			print("Created: " + file_path)
+		else:
+			print("File already exists: " + file_path)
+
+func create_card_resource(file_path, card_name, card_data):
+	var new_card = load(CARD_RESOURCE_PATH).duplicate()
+	
+	new_card.card_name = card_name
+	new_card.attack = card_data.get("attack", 0)
+	new_card.health = card_data.get("health", 1)
+	new_card.ap_cost = card_data.get("ap_cost", 0)
+	new_card.card_type = card_data.get("card_type", 0)
+	new_card.atlas_region = card_data.get("atlas_region", "")
+	new_card.faction = str(card_data.get("faction", "neutral"))
+	new_card.move_range = card_data.get("move_range", 1)
+	new_card.attack_range = card_data.get("attack_range", 1)
+
+	ResourceSaver.save(new_card, file_path)
+	print("Created: " + file_path)

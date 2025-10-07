@@ -1,0 +1,13 @@
+extends Resource
+class_name CardResource
+
+@export var card_name: String = ""
+@export var attack: int = 0
+@export var health: int = 0
+@export var ap_cost: int = 0
+@export var card_type: int = 0  # Enum for unit, spell, artifact, etc.
+@export var atlas_region: String = ""  # For sprite atlas reference
+@export var faction: String = ""
+@export var move_range: int = 1
+@export var attack_range: int = 1
+@export var effects: Array[String] = []  # List of effects applied to this card, this is placeholder for now

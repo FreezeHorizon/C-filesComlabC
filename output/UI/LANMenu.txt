@@ -1,0 +1,54 @@
+extends Control
+
+# Assuming ColorRect is root and VBoxContainer is its child, then another VBox for Join, then HBox for IP/Port
+@onready var ip_line_edit = $ColorRect/VBoxContainer/VBoxContainer/HBoxContainer/IPLineEdit
+@onready var port_line_edit = $ColorRect/VBoxContainer/VBoxContainer/HBoxContainer/PortLineEdit
+@onready var status_label = $ColorRect/VBoxContainer/StatusLabel
+
+func _ready() -> void:
+	# port_line_edit.text = str(NetworkManager.DEFAULT_PORT) # Uncomment when NetworkManager exists
+	pass
+
+func _on_HostButton_pressed() -> void:
+	status_label.text = "Status: Starting server..."
+	var port_to_use = NetworkManager.DEFAULT_PORT # Default
+	if not port_line_edit.text.strip_edges().is_empty():
+		if port_line_edit.text.is_valid_int():
+			port_to_use = int(port_line_edit.text)
+		else:
+			status_label.text = "Status: Invalid Port Number."
+			return
+	var success = NetworkManager.host_game(port_to_use)
+	if success:
+		get_tree().change_scene_to_file("res://UI/HostLobby.tscn") # Ensure this path is correct
+	else:
+		status_label.text = "Status: Failed to host server."
+	pass
+
+func _on_JoinButton_pressed() -> void:
+	var ip_address = ip_line_edit.text.strip_edges()
+	var port_to_use = NetworkManager.DEFAULT_PORT
+	
+	if ip_address.is_empty():
+		status_label.text = "Status: Please enter Host IP Address."
+		return
+	
+	if not port_line_edit.text.strip_edges().is_empty():
+		if port_line_edit.text.is_valid_int():
+			port_to_use = int(port_line_edit.text)
+		else:
+			status_label.text = "Status: Invalid Port Number."
+			return
+	
+	status_label.text = "Status: Joining " + ip_address + ":" + str(port_to_use) + "..."
+	var success = NetworkManager.join_game(ip_address, port_to_use)
+	if success:
+		get_tree().change_scene_to_file("res://UI/ClientLobby.tscn") # Ensure this path is correct
+	else:
+		status_label.text = "Status: Failed to join. Check IP/Port or server not up."
+	pass
+
+
+func _on_BackButton_pressed() -> void:
+	get_tree().change_scene_to_file("res://UI/MainMenu.tscn") # Ensure this path is correct
+	pass 

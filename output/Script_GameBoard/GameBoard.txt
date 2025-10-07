@@ -1,0 +1,54 @@
+extends Node2D
+
+const DEFAULT_SCALING:Vector2 = Vector2(0.5,0.5)
+
+#The starting positions and the gap at each slot
+var START_X
+const START_X_OFFSET = 200
+var X_GAP = 118
+var START_Y = 110
+const START_Y_OFFSET = 200
+var Y_GAP = 143
+
+var board_slots:Array = []
+
+func _ready() -> void:
+	var viewport_size = get_viewport().size
+	START_X = (viewport_size.x - (3 * X_GAP)) / 2
+	START_Y = ((viewport_size.y - (3 * Y_GAP)) / 2) - 40
+	# Generate the positions dynamically
+	var y_positions:Array = []
+	var x_positions:Array = []
+	
+	# Generate X positions
+	for i in range(4):
+		x_positions.append(START_X + (i * X_GAP))
+	
+	# Generate Y positions
+	y_positions.append(START_Y)	 # A
+	y_positions.append(START_Y + Y_GAP)	 # B
+	y_positions.append(START_Y + 2 * Y_GAP)	 # C
+	y_positions.append(START_Y + 3 * Y_GAP)	 # D
+	
+	# Create the board slots
+	for x_idx in range(x_positions.size()):
+		board_slots.append([])
+		for y_idx in range(y_positions.size()):
+			var card_slot: Node2D = preload("res://Scenes/CardSlot.tscn").instantiate()
+			# Create a name based on the position (e.g., "A1", "B2", etc.)
+			var y_name = ["A", "B", "C", "D"][y_idx]
+			var x_name = str(x_idx + 1)
+			card_slot.name = y_name + x_name
+			add_child(card_slot)
+			card_slot.scale = DEFAULT_SCALING
+			# Use the calculated positions
+			card_slot.position = Vector2(x_positions[x_idx], y_positions[y_idx])
+			board_slots[x_idx].append(card_slot)
+			card_slot.get_node("CardActionOverlay/AnimationPlayer").play("card_movement_pointer")
+
+func get_slot_by_name(slot_name: String) -> Node2D:
+	for col_array in board_slots:
+		for slot_node in col_array:
+			if slot_node.name == slot_name:
+				return slot_node
+	return null

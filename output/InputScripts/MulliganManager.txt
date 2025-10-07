@@ -1,0 +1,146 @@
+class_name MulliganManager
+extends Control
+
+# Signal to BattleManager with the player's choices
+signal mulligan_choices_confirmed(kept_card_nodes: Array[Card], card_db_keys_to_return: Array[String])
+
+# --- Constants for Visual Layout ---
+const MULLIGAN_DISPLAY_Y: float = 400.0
+const CARD_SPACING: float = 30.0
+const CARD_BASE_WIDTH: float = 227.0
+# MULLIGAN_CARD_SCALE will be handled by the CardStateMachine's MULLIGAN state.
+
+# --- Variables ---
+var cards_in_mulligan: Array[Card] = []    # Stores the actual Card nodes being displayed
+var selected_mulled_cards: Array[Card] = [] # Card nodes marked by player to return to deck
+
+var mull_phase: bool = false # True while mulligan UI is active and player is making choices
+
+# --- Node References ---
+# No direct references to Deck, PlayerHand, or CardManager needed anymore for its core logic.
+# BattleManager will provide the cards and handle the results.
+@onready var confirm_button: Button = $ConfirmButton # Ensure ConfirmButton is a child Button node
+
+func _ready() -> void:
+	confirm_button.visible = false
+
+# Called by BattleManager to initiate the mulligan UI with a set of cards
+func start_mulligan(cards_in_mull: Array[Card]) -> void:
+	print("MulliganManager: Starting UI for mulligan with ", cards_in_mull.size(), " cards.")
+	mull_phase = true
+	cards_in_mulligan = cards_in_mull
+	selected_mulled_cards.clear()
+	# Ensure MulliganManager is visible if it's a Control node that can be hidden/shown
+	visible = true 
+
+	var screen_center_x: float = get_viewport_rect().size.x / 2.0
+
+	for i in range(cards_in_mulligan.size()):
+		var card_node: Card = cards_in_mulligan[i]
+		print("  MulliganManager: Processing card for display: ", card_node.name)
+		# Parent card to MulliganManager so it's visible and interactive here
+		if card_node.get_parent() != self:
+			if card_node.get_parent() != null:
+				print("    MulliganManager: Removing card ", card_node.name, " from old parent: ", card_node.get_parent().name)
+				card_node.get_parent().remove_child(card_node)
+			add_child(card_node) # Add as a child of this Control node
+			print("    MulliganManager: Added card ", card_node.name, " as child. Current parent: ", card_node.get_parent().name)
+			card_node.setup_for_mulligan_display()
+		display_mulligan(card_node, i, cards_in_mulligan.size(), screen_center_x)
+		card_node.modulate = Color.WHITE # Reset any previous modulation
+
+	confirm_button.visible = true
+	
+	# Disable deck clicking during mulligan (BattleManager might also enforce this)
+	get_node("%Deck").set_deck_clickable(false)
+
+# Helper function to position cards (internal)
+func display_mulligan(card_node: Card, index: int, card_count: int, screen_center_x: float) -> void:
+	if card_count == 0: 
+		return
+	var card_scaled_width: float = CARD_BASE_WIDTH * GameConstants.MULLIGAN_CARD_SCALE.x
+	var total_cards_visual_width: float = card_count * card_scaled_width
+	var total_spacing_width: float = max(0, card_count - 1) * CARD_SPACING # No spacing if only 1 card
+	var total_block_width: float = total_cards_visual_width + total_spacing_width
+	var first_card_left_edge_x: float = screen_center_x - (total_block_width / 2.0)
+	var target_pos_x_center: float = first_card_left_edge_x + (card_scaled_width / 2.0) + (index * (card_scaled_width + CARD_SPACING))
+
+	var target_position = Vector2(target_pos_x_center, MULLIGAN_DISPLAY_Y)
+
+	# --- Animation ---
+	var tween = create_tween()
+	tween.tween_property(card_node, "position", target_position, 0.3).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.tween_property(card_node, "scale", GameConstants.MULLIGAN_CARD_SCALE, 0.2).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+	# Make sure Area2D is enabled for click detection
+	card_node.get_node("Area2D/CollisionShape2D").set_deferred("disabled", false)
+
+# Called by BattleManager (which gets the event from InputManager)
+func toggle_mulligan_selection(card_node: Card) -> void:
+	if not mull_phase or not card_node in cards_in_mulligan:
+		print("MulliganManager: Cannot toggle selection. Not in mulligan phase or card not in mulligan list.")
+		return
+
+	if card_node in selected_mulled_cards:
+		selected_mulled_cards.erase(card_node)
+		card_node.modulate = Color.WHITE # Default appearance
+		print("MulliganManager: Deselected '", card_node.name, "' for return.")
+	else:
+		selected_mulled_cards.append(card_node)
+		card_node.modulate = Color(0.65, 0.65, 0.65, 1.0) # Grayed out
+		print("MulliganManager: Selected '", card_node.name, "' for return.")
+
+
+func _on_ConfirmButton_pressed() -> void:
+	print("MulliganManager: Confirm button pressed.")
+	confirm_button.visible = false
+	mull_phase = false # Mulligan interaction phase ends
+
+	var kept_card_nodes: Array[Card] = []
+	var card_db_keys_to_return: Array[String] = []
+
+	for card_node in cards_in_mulligan:
+		if card_node in selected_mulled_cards:
+			var db_key = card_node.get_database_key() 
+			if db_key != "":
+				card_db_keys_to_return.append(db_key)
+				print("MulliganManager: Marking '", card_node.name, "' (DB Key: ", db_key, ") for return.")
+				card_node.get_node("AnimationPlayer").play("SendBackToDeck") 
+
+				_animate_card_return(card_node) # This tweens position and scale to zero
+			else:
+				printerr("MulliganManager ERROR: Could not get DB key for ", card_node.name)
+		else:
+			
+			kept_card_nodes.append(card_node) # This card is kept
+			card_node.modulate = Color.WHITE # Ensure it's not grayed
+			print("MulliganManager: Keeping '", card_node.name, "'")
+	
+	# After animations (if any), emit choices to BattleManager
+	if selected_mulled_cards.size() > 0:
+		selected_mulled_cards.back()
+		await get_tree().create_timer(0.4).timeout # Duration of shrink animation
+
+	# Free the nodes that were marked for return (BattleManager will add them back to deck by name)
+	for card_node_to_free in selected_mulled_cards:
+		card_node_to_free.queue_free()
+
+	cards_in_mulligan.clear()
+	selected_mulled_cards.clear()
+	
+	emit_signal("mulligan_choices_confirmed", kept_card_nodes, card_db_keys_to_return)
+	
+	# MulliganManager hides itself after confirming. BattleManager handles further UI.
+	visible = false 
+	
+	# Re-enable deck clicking (BattleManager should also confirm this)
+	#get_node("%TurnEndButton").show()
+
+func _animate_card_return(card_node: Card):
+	var deck_node_visual_target = get_node_or_null("%Deck") # For visual target position
+	var target_pos = card_node.global_position # Default to current if deck not found
+	target_pos = deck_node_visual_target.global_position - self.global_position # Adjust if MulliganManager is not at (0,0)
+
+	var tween = get_tree().create_tween().set_parallel(true) # Parallel tween for pos and scale
+	tween.tween_property(card_node, "position", target_pos, 0.3)
+	tween.tween_property(card_node, "scale", Vector2.ZERO, 0.3)

@@ -1,0 +1,7 @@
+
+const Region = {
+	MoveCircle = Rect2(40,1112,264,264),
+	ArtifactCircle = Rect2(920,1064,256,256),
+	AttackCircle = Rect2(816,776,264,264),
+	SpellCircle = Rect2(1088,488,264,264)
+}
